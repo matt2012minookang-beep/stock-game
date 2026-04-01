@@ -99,6 +99,12 @@
       display:grid;
       grid-template-columns:1fr 1fr;
       gap:10px;
+      margin-bottom:8px;
+    }
+    .splitbar{
+      height:1px;
+      background:linear-gradient(90deg,transparent,rgba(148,163,184,.35),transparent);
+      margin:14px 0;
     }
     .stat{
       background:rgba(30,41,59,.52);
@@ -339,6 +345,14 @@
         </div>
 
         <div class="chart-wrap">
+          <div class="headline" style="margin-bottom:10px;">
+            <div class="small">최근 구간만 표시</div>
+            <div class="btnrow">
+              <button id="chartShortBtn" class="ghost">짧게</button>
+              <button id="chartMidBtn" class="ghost">중간</button>
+              <button id="chartLongBtn" class="ghost">길게</button>
+            </div>
+          </div>
           <canvas id="chartCanvas" width="860" height="320"></canvas>
         </div>
 
@@ -360,6 +374,8 @@
             <div id="detailHoldingValue" class="value">0원</div>
           </div>
         </div>
+
+        <div class="splitbar"></div>
 
         <div class="tradepanel">
           <div>
@@ -414,6 +430,7 @@
           </div>
 
           <div class="section-gap">
+            <div class="splitbar"></div>
             <div class="headline">
               <h3>포트폴리오</h3>
               <div class="small">평균단가 / 손익 표시</div>
@@ -444,6 +461,7 @@
           <div id="bankNotice" class="notice"></div>
 
           <div class="section-gap">
+            <div class="splitbar"></div>
             <div class="headline">
               <h3>대출 목록</h3>
               <div class="small">미상환 대출별 경과시간 표시</div>
@@ -475,6 +493,11 @@
     const INTEREST_INTERVAL_MS = 2 * 24 * 60 * 60 * 1000;
     const OVERDUE_MS = 7 * 24 * 60 * 60 * 1000;
     const GRAPH_MAX_POINTS = 140;
+    const CHART_WINDOWS = {
+      short: 40,
+      mid: 80,
+      long: 140
+    };
 
     const defaultStocks = [
       { key:"samsung", name:"삼성전자", sector:"반도체", price:73500, baseVol:0.012, drift:0.0008, fundamentals:0.83 },
@@ -555,6 +578,9 @@
     ];
 
     const els = {
+      chartShortBtn: document.getElementById('chartShortBtn'),
+      chartMidBtn: document.getElementById('chartMidBtn'),
+      chartLongBtn: document.getElementById('chartLongBtn'),
       nicknameOverlay: document.getElementById('nicknameOverlay'),
       nicknameInput: document.getElementById('nicknameInput'),
       nicknameNotice: document.getElementById('nicknameNotice'),
@@ -599,6 +625,7 @@
     const ctx = els.chartCanvas.getContext('2d');
 
     const state = {
+      chartWindow: 'mid',
       investorName: "",
       initialCash: INITIAL_CASH,
       cash: INITIAL_CASH,
@@ -779,33 +806,46 @@
     function updateStocks(){
       applyDailyResetIfNeeded();
       const intensity = marketIntensity();
-      state.marketMood *= 0.98;
+      state.marketMood *= 0.96;
+
       state.stocks.forEach(stock => {
         stock.lastPrice = stock.price;
-        const minuteBias = (Math.sin(Date.now()/120000 + stock.fundamentals*3) * 0.0009);
-        const sectorFlow = state.marketMood * 0.002;
-        stock.trendMemory = stock.trendMemory * 0.82 + gaussian() * 0.25;
-        stock.eventBias *= 0.93;
-        let change = (stock.drift * intensity)
-          + minuteBias
-          + sectorFlow
-          + stock.eventBias
-          + stock.trendMemory * stock.baseVol * 0.12
-          + gaussian() * stock.baseVol * 0.35 * intensity;
 
-        // 적당한 현실성: 너무 한 번에 안 튀게 제한
-        change = Math.max(-0.13, Math.min(0.13, change));
+        const intrinsicBase = stock.dayOpen || stock.price;
+        const valuationGap = (intrinsicBase - stock.price) / Math.max(1, intrinsicBase);
+        const meanReversion = valuationGap * 0.035;
+        const clockWave = Math.sin(Date.now()/180000 + stock.fundamentals*5) * 0.0007;
+        const randomShock = gaussian() * stock.baseVol * 0.22 * intensity;
+        const moodEffect = state.marketMood * 0.0012;
+
+        stock.trendMemory = stock.trendMemory * 0.65 + gaussian() * 0.08;
+        stock.eventBias *= 0.88;
+
+        let change =
+          (stock.drift * 0.18 * intensity)
+          + meanReversion
+          + clockWave
+          + moodEffect
+          + stock.eventBias
+          + stock.trendMemory * stock.baseVol * 0.08
+          + randomShock;
+
+        const band = stock.baseVol * 2.8;
+        change = Math.max(-band, Math.min(band, change));
+
         let next = Math.round(stock.price * (1 + change));
         next = Math.max(100, next);
+
         stock.price = next;
         stock.history.push(next);
-        if(stock.history.length > GRAPH_MAX_POINTS) stock.history.shift();
+        if(stock.history.length > GRAPH_MAX_POINTS) stock.history = stock.history.slice(-GRAPH_MAX_POINTS);
       });
+
       renderAll();
     }
 
     function maybeTriggerEvent(){
-      const chance = 0.42;
+      const chance = 0.36;
       if(Math.random() > chance) return;
       const ev = structuredClone(eventTemplates[Math.floor(Math.random()*eventTemplates.length)]);
       ev.id = Math.random().toString(36).slice(2);
@@ -813,17 +853,18 @@
       ev.effectsApplied = [];
 
       for(const stock of state.stocks){
-        let factor = ev.effects[stock.sector];
+        const factor = ev.effects[stock.sector];
         if(typeof factor === 'number'){
-          const personal = factor * (0.8 + Math.random()*0.45);
+          const personal = factor * (0.88 + Math.random()*0.24);
           stock.price = Math.max(100, Math.round(stock.price * (1 + personal)));
-          stock.eventBias += personal * 0.18;
+          stock.eventBias += personal * 0.11;
           stock.history.push(stock.price);
-          if(stock.history.length > GRAPH_MAX_POINTS) stock.history.shift();
+          if(stock.history.length > GRAPH_MAX_POINTS) stock.history = stock.history.slice(-GRAPH_MAX_POINTS);
           ev.effectsApplied.push(`${stock.name} ${personal > 0 ? '+' : ''}${(personal*100).toFixed(1)}%`);
         }
       }
-      state.marketMood += (Math.random()-0.5)*0.8;
+
+      state.marketMood += (Math.random()-0.5)*0.35;
       state.events.unshift(ev);
       state.events = state.events.slice(0, 30);
       pushTicker(`${ev.title} — ${ev.text}`);
@@ -1056,11 +1097,12 @@
       ctx.fillRect(0,0,w,h);
 
       const pad = {l:58,r:22,t:18,b:34};
-      const data = stock.history.slice(-GRAPH_MAX_POINTS);
+      const windowSize = CHART_WINDOWS[state.chartWindow] || CHART_WINDOWS.mid;
+      const data = stock.history.slice(-windowSize);
       const min = Math.min(...data);
       const max = Math.max(...data);
       const range = Math.max(1, max - min);
-      
+
       ctx.strokeStyle = 'rgba(148,163,184,.15)';
       ctx.lineWidth = 1;
       for(let i=0;i<5;i++){
@@ -1121,7 +1163,8 @@
 
       ctx.fillStyle = '#cbd5e1';
       ctx.font = '13px Malgun Gothic';
-      ctx.fillText('최근 흐름', pad.l, h - 8);
+      const label = state.chartWindow === 'short' ? '짧게' : state.chartWindow === 'mid' ? '중간' : '길게';
+      ctx.fillText(`최근 ${label} 구간`, pad.l, h - 8);
       ctx.fillText(`시초가 ${formatKRW(stock.dayOpen)} / 현재가 ${formatKRW(stock.price)}`, w - 290, h - 8);
     }
 
@@ -1218,6 +1261,12 @@
       els.holdingTotalText.textContent = formatKRW(holding);
       const earning = getCurrentEarning();
       els.earningText.innerHTML = `<span class="${earning >= 0 ? 'good' : 'bad'}">${formatSignedKRW(earning)}</span>`;
+
+      if(els.chartShortBtn && els.chartMidBtn && els.chartLongBtn){
+        els.chartShortBtn.style.outline = state.chartWindow === 'short' ? '2px solid rgba(255,255,255,.25)' : 'none';
+        els.chartMidBtn.style.outline = state.chartWindow === 'mid' ? '2px solid rgba(255,255,255,.25)' : 'none';
+        els.chartLongBtn.style.outline = state.chartWindow === 'long' ? '2px solid rgba(255,255,255,.25)' : 'none';
+      }
     }
 
     function renderAll(){
@@ -1273,6 +1322,9 @@
       };
       els.loanBtn.onclick = borrowMoney;
       els.repayBtn.onclick = repayMoney;
+      if(els.chartShortBtn) els.chartShortBtn.onclick = () => { state.chartWindow = 'short'; renderAll(); };
+      if(els.chartMidBtn) els.chartMidBtn.onclick = () => { state.chartWindow = 'mid'; renderAll(); };
+      if(els.chartLongBtn) els.chartLongBtn.onclick = () => { state.chartWindow = 'long'; renderAll(); };
       window.addEventListener('beforeunload', saveState);
     }
 
